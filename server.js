@@ -3,8 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const cors = require("cors");
 const { google } = require("googleapis");
-const session = require("express-session");
-const bodyParser = require("body-parser");
+const { OAuth2 } = google.auth;
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -13,22 +12,22 @@ const PORT = process.env.PORT || 3000;
 const baseDir = process.cwd();
 const doodleFolder = path.join(baseDir, "data", "doodles");
 
+// Google OAuth2 setup (replace with your credentials)
+const oAuth2Client = new OAuth2(
+  process.env.GOOGLE_CLIENT_ID, // Your Google Client ID
+  process.env.GOOGLE_CLIENT_SECRET, // Your Google Client Secret
+  "https://doodle-gallery.onrender.com/oauth2callback" // Redirect URI
+);
+
+const drive = google.drive({ version: "v3", auth: oAuth2Client });
+
+// Folder ID in Google Drive (replace with your folder ID)
+const folderId = "13lFFV-q1Cse2xSWogmWr6VTLeaVd54V2"; // Google Drive folder ID
+
 // Middleware setup
 app.use(cors()); // Enable CORS for all domains (You can modify it later for more specific rules)
 app.use(express.json({ limit: "10mb" }));
 app.use("/data", express.static(path.join(baseDir, "data")));
-app.use(bodyParser.urlencoded({ extended: false }));
-app.use(session({ secret: "your-secret-key", resave: false, saveUninitialized: true }));
-
-// Google OAuth2 setup
-const oauth2Client = new google.auth.OAuth2(
-  process.env.GOOGLE_CLIENT_ID,
-  process.env.GOOGLE_CLIENT_SECRET,
-  process.env.GOOGLE_REDIRECT_URI
-);
-
-// Google Drive API
-const drive = google.drive({ version: "v3", auth: oauth2Client });
 
 // Ensure doodle folder exists
 fs.mkdirSync(doodleFolder, { recursive: true }, (err) => {
@@ -39,31 +38,8 @@ fs.mkdirSync(doodleFolder, { recursive: true }, (err) => {
   }
 });
 
-// Route to initiate OAuth login
-app.get("/auth/google", (req, res) => {
-  const authUrl = oauth2Client.generateAuthUrl({
-    access_type: "offline",
-    scope: ["https://www.googleapis.com/auth/drive.file"],
-  });
-  res.redirect(authUrl);
-});
-
-// OAuth2 callback route
-app.get("/oauth2callback", (req, res) => {
-  const code = req.query.code;
-  oauth2Client.getToken(code, (err, tokens) => {
-    if (err) {
-      console.error("Error getting OAuth tokens:", err);
-      return res.status(500).send("Failed to authenticate");
-    }
-    oauth2Client.setCredentials(tokens);
-    req.session.tokens = tokens;
-    res.redirect("/gallery");
-  });
-});
-
-// POST: Submit new doodle (Save to Google Drive)
-app.post("/submit", (req, res) => {
+// POST: Submit new doodle
+app.post("/submit", async (req, res) => {
   const { imageData } = req.body;
   if (!imageData) {
     console.error("Error: Missing imageData");
@@ -72,156 +48,133 @@ app.post("/submit", (req, res) => {
 
   const base64Data = imageData.replace(/^data:image\/png;base64,/, "");
   const filename = `doodle-${Date.now()}.png`;
+  const filePath = path.join(doodleFolder, filename);
 
-  // Save image to Google Drive
-  const fileMetadata = {
-    name: filename,
-    parents: ["root"],
-  };
-  const media = {
-    mimeType: "image/png",
-    body: Buffer.from(base64Data, "base64"),
-  };
-
-  drive.files.create(
-    {
-      resource: fileMetadata,
-      media: media,
-      fields: "id",
-    },
-    (err, file) => {
-      if (err) {
-        console.error("Error saving doodle to Google Drive:", err);
-        return res.status(500).send("Failed to save doodle to Google Drive");
-      }
-      console.log(`✅ Doodle saved at Google Drive with ID: ${file.data.id}`);
-      res.status(200).send("Saved successfully!");
+  // Save doodle locally first
+  fs.writeFile(filePath, base64Data, "base64", async (err) => {
+    if (err) {
+      console.error("Error saving doodle:", err);
+      return res.status(500).send("Failed to save doodle");
     }
-  );
+    console.log(`✅ Doodle saved at ${filePath}`);
+
+    // Upload to Google Drive
+    try {
+      const fileMetadata = {
+        name: filename,
+        parents: [folderId] // Upload to your specified Google Drive folder
+      };
+      const media = {
+        mimeType: "image/png",
+        body: fs.createReadStream(filePath),
+      };
+
+      // Upload the image to Google Drive
+      const driveResponse = await drive.files.create({
+        resource: fileMetadata,
+        media: media,
+        fields: "id",
+      });
+
+      console.log(`✅ Doodle uploaded to Google Drive: ${driveResponse.data.id}`);
+      res.status(200).send("Saved and uploaded successfully!");
+    } catch (uploadErr) {
+      console.error("Error uploading doodle to Google Drive:", uploadErr);
+      res.status(500).send("Failed to upload doodle to Google Drive");
+    }
+  });
 });
 
-// DELETE: Remove a specific doodle (Delete from Google Drive)
+// DELETE: Remove a specific doodle
 app.delete("/delete/:filename", (req, res) => {
   const { filename } = req.params;
+  const filePath = path.join(doodleFolder, filename);
 
   // Prevent path traversal attacks
   if (!filename.endsWith(".png") || filename.includes("..")) {
     return res.status(400).send("Invalid filename");
   }
 
-  // Get file ID from Google Drive
-  drive.files.list(
-    {
-      q: `name = '${filename}'`,
-      fields: "files(id, name)",
-    },
-    (err, result) => {
-      if (err) {
-        console.error("Error fetching file from Google Drive:", err);
-        return res.status(500).send("Failed to fetch file");
-      }
-
-      const file = result.data.files[0];
-      if (file) {
-        drive.files.delete({ fileId: file.id }, (err) => {
-          if (err) {
-            console.error("Error deleting file from Google Drive:", err);
-            return res.status(500).send("Failed to delete doodle");
-          }
-          console.log(`🗑️ Deleted doodle: ${filename}`);
-          res.status(200).send("Deleted successfully!");
-        });
-      } else {
-        res.status(404).send("File not found");
-      }
+  fs.unlink(filePath, (err) => {
+    if (err) {
+      console.error("Error deleting doodle:", err);
+      return res.status(500).send("Failed to delete doodle");
     }
-  );
+    console.log(`🗑️ Deleted doodle: ${filename}`);
+    res.status(200).send("Deleted successfully!");
+  });
 });
 
 // GET: Serve doodle gallery page
-app.get("/gallery", (req, res) => {
-  if (!req.session.tokens) {
-    return res.redirect("/auth/google");
-  }
-
-  oauth2Client.setCredentials(req.session.tokens);
-
-  // Fetch files from Google Drive
-  drive.files.list(
-    {
-      q: "mimeType = 'image/png'",
-      fields: "files(id, name)",
-    },
-    (err, result) => {
-      if (err) {
-        console.error("Error reading doodles from Google Drive:", err);
-        return res.status(500).send("Error reading doodles.");
-      }
-
-      const imageCards = result.data.files
-        .map(
-          (file) => `
-          <div style="margin: 20px; display: inline-block;">
-            <img src="https://drive.google.com/uc?id=${file.id}" alt="${file.name}" style="max-width:300px;margin:10px;border:2px solid #ccc;border-radius:8px;">
-            <br>
-            <button onclick="deleteImage('${file.name}')">🗑️ Delete</button>
-          </div>
-        `
-        )
-        .join("");
-
-      const html = `
-        <!DOCTYPE html>
-        <html>
-          <head>
-            <title>My Doodle Gallery</title>
-            <style>
-              body {
-                background-color: #feb1cb;
-                font-family: sans-serif;
-                text-align: center;
-                padding: 2rem;
-              }
-              h1 {
-                font-size: 2rem;
-              }
-              button {
-                background: #ff4b5c;
-                color: white;
-                border: none;
-                padding: 0.5rem 1rem;
-                border-radius: 5px;
-                cursor: pointer;
-              }
-              button:hover {
-                background: #e04353;
-              }
-            </style>
-          </head>
-          <body>
-            <h1>My Doodle Gallery</h1>
-            ${imageCards || "<p>No doodles yet!</p>"}
-            <script>
-              function deleteImage(filename) {
-                if (confirm("Are you sure you want to delete " + filename + "?")) {
-                  fetch('/delete/' + filename, { method: 'DELETE' })
-                    .then(res => {
-                      if (res.ok) {
-                        alert("Deleted!");
-                        location.reload();
-                      } else {
-                        alert("Failed to delete.");
-                      }
-                    });
-                }
-              }
-            </script>
-          </body>
-        </html>
-      `;
-      res.send(html);
+app.get("/", (req, res) => {
+  console.log("Handling gallery request...");
+  fs.readdir(doodleFolder, (err, files) => {
+    if (err) {
+      console.error("Error reading doodles:", err);
+      return res.status(500).send("Error reading doodles.");
     }
-  );
+
+    const imageCards = files
+      .filter(file => file.endsWith(".png"))
+      .sort((a, b) => b.localeCompare(a))
+      .map(file => ` 
+        <div style="margin: 20px; display: inline-block;">
+          <img src="/data/doodles/${file}" alt="${file}" style="max-width:300px;margin:10px;border:2px solid #ccc;border-radius:8px;">
+          <br>
+          <button onclick="deleteImage('${file}')">🗑️ Delete</button>
+        </div>
+      `)
+      .join("");
+
+    const html = `<!DOCTYPE html>
+    <html>
+      <head>
+        <title>My Doodle Gallery</title>
+        <style>
+          body {
+            background-color: #feb1cb;
+            font-family: sans-serif;
+            text-align: center;
+            padding: 2rem;
+          }
+          h1 {
+            font-size: 2rem;
+          }
+          button {
+            background: #ff4b5c;
+            color: white;
+            border: none;
+            padding: 0.5rem 1rem;
+            border-radius: 5px;
+            cursor: pointer;
+          }
+          button:hover {
+            background: #e04353;
+          }
+        </style>
+      </head>
+      <body>
+        <h1>My Doodle Gallery</h1>
+        ${imageCards || "<p>No doodles yet!</p>"}
+        <script>
+          function deleteImage(filename) {
+            if (confirm("Are you sure you want to delete " + filename + "?")) {
+              fetch('/delete/' + filename, { method: 'DELETE' })
+                .then(res => {
+                  if (res.ok) {
+                    alert("Deleted!");
+                    location.reload();
+                  } else {
+                    alert("Failed to delete.");
+                  }
+                });
+            }
+          }
+        </script>
+      </body>
+    </html>`;
+    res.send(html);
+  });
 });
 
 // Optional test route
