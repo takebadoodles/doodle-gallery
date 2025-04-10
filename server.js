@@ -11,8 +11,8 @@ const PORT = process.env.PORT || 3000;
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI;
-const GOOGLE_ACCESS_TOKEN = process.env.GOOGLE_ACCESS_TOKEN;
-const GOOGLE_REFRESH_TOKEN = process.env.GOOGLE_REFRESH_TOKEN;
+let GOOGLE_ACCESS_TOKEN = process.env.GOOGLE_ACCESS_TOKEN;
+let GOOGLE_REFRESH_TOKEN = process.env.GOOGLE_REFRESH_TOKEN;
 
 const oauth2Client = new google.auth.OAuth2(
   GOOGLE_CLIENT_ID,
@@ -27,7 +27,7 @@ oauth2Client.setCredentials({
 });
 
 // Automatically refresh the access token when it expires
-oauth2Client.on('tokens', (tokens) => {
+oauth2Client.on("tokens", (tokens) => {
   if (tokens.refresh_token) {
     GOOGLE_REFRESH_TOKEN = tokens.refresh_token; // Save the new refresh token
   }
@@ -54,8 +54,9 @@ app.post("/submit", async (req, res) => {
   const base64Data = imageData.replace(/^data:image\/png;base64,/, "");
   const filename = `doodle-${Date.now()}.png`;
 
-  // Create a buffer from base64 data
-  const buffer = Buffer.from(base64Data, 'base64');
+  // Create a readable stream from the base64 image data
+  const bufferStream = new require("stream").PassThrough();
+  bufferStream.end(Buffer.from(base64Data, "base64"));
 
   // Upload doodle to Google Drive
   try {
@@ -63,25 +64,15 @@ app.post("/submit", async (req, res) => {
       name: filename,
       parents: [DRIVE_FOLDER_ID], // Google Drive folder ID
     };
-
     const media = {
       mimeType: "image/png",
-      body: buffer, // Pass the buffer directly here
+      body: bufferStream, // Use bufferStream as the body
     };
 
     const driveResponse = await drive.files.create({
       resource: fileMetadata,
       media: media,
       fields: "id",
-    });
-
-    // Make the uploaded file public (readable by anyone with the link)
-    await drive.permissions.create({
-      fileId: driveResponse.data.id,
-      resource: {
-        role: "reader",
-        type: "anyone",
-      },
     });
 
     console.log("✅ Doodle uploaded to Google Drive:", driveResponse.data.id);
