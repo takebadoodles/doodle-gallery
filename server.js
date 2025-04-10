@@ -12,8 +12,8 @@ const PORT = process.env.PORT || 3000;
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI;
-const GOOGLE_ACCESS_TOKEN = process.env.GOOGLE_ACCESS_TOKEN;
-const GOOGLE_REFRESH_TOKEN = process.env.GOOGLE_REFRESH_TOKEN;
+let GOOGLE_ACCESS_TOKEN = process.env.GOOGLE_ACCESS_TOKEN;
+let GOOGLE_REFRESH_TOKEN = process.env.GOOGLE_REFRESH_TOKEN;
 
 const oauth2Client = new google.auth.OAuth2(
   GOOGLE_CLIENT_ID,
@@ -21,26 +21,24 @@ const oauth2Client = new google.auth.OAuth2(
   GOOGLE_REDIRECT_URI
 );
 
-// Set the credentials for Google Drive API using the tokens
 oauth2Client.setCredentials({
   access_token: GOOGLE_ACCESS_TOKEN,
   refresh_token: GOOGLE_REFRESH_TOKEN,
 });
 
-// Automatically refresh the access token when it expires
 oauth2Client.on('tokens', (tokens) => {
   if (tokens.refresh_token) {
-    GOOGLE_REFRESH_TOKEN = tokens.refresh_token; // Save the new refresh token
+    GOOGLE_REFRESH_TOKEN = tokens.refresh_token;
   }
-  GOOGLE_ACCESS_TOKEN = tokens.access_token; // Update the access token
+  GOOGLE_ACCESS_TOKEN = tokens.access_token;
 });
 
 const drive = google.drive({ version: "v3", auth: oauth2Client });
 
-// Folder ID for your Google Drive folder
+// Your Google Drive folder ID
 const DRIVE_FOLDER_ID = "13lFFV-q1Cse2xSWogmWr6VTLeaVd54V2";
 
-// Middleware setup
+// Middleware
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 
@@ -55,41 +53,47 @@ app.post("/submit", async (req, res) => {
   const base64Data = imageData.replace(/^data:image\/png;base64,/, "");
   const filename = `doodle-${Date.now()}.png`;
 
-  // Upload doodle to Google Drive
   try {
-    const fileMetadata = {
-      name: filename,
-      parents: [DRIVE_FOLDER_ID], // Google Drive folder ID
-    };
-
-    // Convert base64 to a readable stream
     const buffer = Buffer.from(base64Data, "base64");
     const bufferStream = new stream.PassThrough();
     bufferStream.end(buffer);
 
+    const fileMetadata = {
+      name: filename,
+      parents: [DRIVE_FOLDER_ID],
+    };
+
     const media = {
       mimeType: "image/png",
-      body: bufferStream,  // Use the stream here
+      body: bufferStream,
     };
 
     const driveResponse = await drive.files.create({
       resource: fileMetadata,
-      media: media,
+      media,
       fields: "id",
     });
 
     const fileId = driveResponse.data.id;
 
-    // Now make the file publicly viewable
+    // Make file public
     await drive.permissions.create({
-      fileId: fileId,
+      fileId,
       requestBody: {
-        role: 'reader',  // Give read access
-        type: 'anyone',  // Make it public
+        role: "reader",
+        type: "anyone",
       },
     });
 
-    console.log("✅ Doodle uploaded to Google Drive:", fileId);
+    // Explicitly share it (just in case)
+    await drive.files.update({
+      fileId,
+      requestBody: {
+        shared: true,
+      },
+    });
+
+    console.log("✅ Doodle uploaded and shared:", fileId);
     res.status(200).send("Saved and uploaded successfully!");
   } catch (err) {
     console.error("Error uploading doodle to Google Drive:", err);
@@ -97,25 +101,21 @@ app.post("/submit", async (req, res) => {
   }
 });
 
-// DELETE: Remove a specific doodle from Google Drive
+// DELETE: Remove doodle from Drive
 app.delete("/delete/:fileId", async (req, res) => {
   const { fileId } = req.params;
 
-  // Delete the doodle from Google Drive
   try {
-    await drive.files.delete({
-      fileId: fileId,
-    });
-
-    console.log(`🗑️ Deleted doodle from Google Drive: ${fileId}`);
-    res.status(200).send("Deleted successfully from Google Drive!");
+    await drive.files.delete({ fileId });
+    console.log(`🗑️ Deleted doodle: ${fileId}`);
+    res.status(200).send("Deleted successfully!");
   } catch (err) {
-    console.error("Error deleting doodle from Google Drive:", err);
-    res.status(500).send("Failed to delete doodle from Google Drive");
+    console.error("Error deleting doodle:", err);
+    res.status(500).send("Failed to delete doodle");
   }
 });
 
-// GET: Serve doodle gallery page with images from Google Drive
+// GET: Show doodle gallery
 app.get("/", async (req, res) => {
   try {
     const listResponse = await drive.files.list({
@@ -127,7 +127,7 @@ app.get("/", async (req, res) => {
       .sort((a, b) => b.name.localeCompare(a.name))
       .map((file) => `
         <div style="margin: 20px; display: inline-block;">
-          <img src="https://drive.google.com/uc?id=${file.id}" alt="${file.name}" style="max-width:300px;margin:10px;border:2px solid #ccc;border-radius:8px;">
+          <img src="https://drive.google.com/uc?export=view&id=${file.id}" alt="${file.name}" style="max-width:300px;margin:10px;border:2px solid #ccc;border-radius:8px;">
           <br>
           <button onclick="deleteImage('${file.id}')">🗑️ Delete</button>
         </div>
@@ -183,9 +183,10 @@ app.get("/", async (req, res) => {
         </body>
       </html>
     `;
+
     res.send(html);
   } catch (err) {
-    console.error("Error fetching doodles from Google Drive:", err);
+    console.error("Error fetching doodles:", err);
     res.status(500).send("Error fetching doodles.");
   }
 });
@@ -195,7 +196,6 @@ app.get("/test", (req, res) => {
   res.send("Server is alive!");
 });
 
-// Start server
 app.listen(PORT, () => {
   console.log(`🚀 Server is running on port ${PORT}`);
 });
