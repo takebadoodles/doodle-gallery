@@ -8,7 +8,6 @@ const stream = require("stream");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Google Drive credentials from environment variables
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI;
@@ -28,48 +27,38 @@ oauth2Client.setCredentials({
 
 const drive = google.drive({ version: "v3", auth: oauth2Client });
 
-// Your Google Drive folder ID
 const DRIVE_FOLDER_ID = "13lFFV-q1Cse2xSWogmWr6VTLeaVd54V2";
 
-// Middleware
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 
-// POST: Submit a new doodle
+// POST: Upload a doodle to Google Drive
 app.post("/submit", async (req, res) => {
   const { imageData } = req.body;
-  if (!imageData) {
-    console.error("Error: Missing imageData");
-    return res.status(400).send("Missing imageData");
-  }
+  if (!imageData) return res.status(400).send("Missing imageData");
 
   const base64Data = imageData.replace(/^data:image\/png;base64,/, "");
   const filename = `doodle-${Date.now()}.png`;
 
   try {
-    const fileMetadata = {
-      name: filename,
-      parents: [DRIVE_FOLDER_ID],
-    };
-
     const buffer = Buffer.from(base64Data, "base64");
     const bufferStream = new stream.PassThrough();
     bufferStream.end(buffer);
 
-    const media = {
-      mimeType: "image/png",
-      body: bufferStream,
-    };
-
-    const driveResponse = await drive.files.create({
-      resource: fileMetadata,
-      media: media,
-      fields: "id",
+    const response = await drive.files.create({
+      resource: {
+        name: filename,
+        parents: [DRIVE_FOLDER_ID],
+      },
+      media: {
+        mimeType: "image/png",
+        body: bufferStream,
+      },
+      fields: "id, webContentLink",
     });
 
-    const fileId = driveResponse.data.id;
+    const fileId = response.data.id;
 
-    // ✅ Make the image public
     await drive.permissions.create({
       fileId: fileId,
       requestBody: {
@@ -78,7 +67,7 @@ app.post("/submit", async (req, res) => {
       },
     });
 
-    console.log("✅ Uploaded doodle to Drive:", fileId);
+    console.log("✅ Uploaded doodle:", response.data.webContentLink);
     res.status(200).send("Saved and uploaded successfully!");
   } catch (err) {
     console.error("Error uploading doodle to Google Drive:", err);
@@ -86,40 +75,40 @@ app.post("/submit", async (req, res) => {
   }
 });
 
-// DELETE: Remove a doodle by fileId
+// DELETE: Remove a doodle from Drive
 app.delete("/delete/:fileId", async (req, res) => {
   const { fileId } = req.params;
 
   try {
-    await drive.files.delete({
-      fileId: fileId,
-    });
-
-    console.log(`🗑️ Deleted doodle from Drive: ${fileId}`);
-    res.status(200).send("Deleted successfully from Google Drive!");
+    await drive.files.delete({ fileId });
+    console.log(`🗑️ Deleted doodle: ${fileId}`);
+    res.status(200).send("Deleted successfully!");
   } catch (err) {
-    console.error("Error deleting doodle from Google Drive:", err);
-    res.status(500).send("Failed to delete doodle from Google Drive");
+    console.error("Error deleting doodle:", err);
+    res.status(500).send("Failed to delete doodle");
   }
 });
 
-// GET: Display doodles as a gallery
+// GET: Render the doodle gallery
 app.get("/", async (req, res) => {
   try {
     const listResponse = await drive.files.list({
       q: `'${DRIVE_FOLDER_ID}' in parents and mimeType = 'image/png'`,
-      fields: "files(id, name)",
+      fields: "files(id, name, webContentLink)",
     });
 
     const imageCards = listResponse.data.files
       .sort((a, b) => b.name.localeCompare(a.name))
-      .map((file) => `
-        <div style="margin: 20px; display: inline-block;">
-          <img src="https://drive.google.com/uc?id=${file.id}" alt="${file.name}" style="max-width:300px;margin:10px;border:2px solid #ccc;border-radius:8px;">
-          <br>
-          <button onclick="deleteImage('${file.id}')">🗑️ Delete</button>
-        </div>
-      `)
+      .map((file) => {
+        const embedUrl = file.webContentLink?.replace("&export=download", "") || "";
+        return `
+          <div style="margin: 20px; display: inline-block;">
+            <img src="${embedUrl}" alt="${file.name}" style="max-width:300px;margin:10px;border:2px solid #ccc;border-radius:8px;">
+            <br>
+            <button onclick="deleteImage('${file.id}')">🗑️ Delete</button>
+          </div>
+        `;
+      })
       .join("");
 
     const html = `
@@ -173,17 +162,15 @@ app.get("/", async (req, res) => {
     `;
     res.send(html);
   } catch (err) {
-    console.error("Error fetching doodles from Google Drive:", err);
-    res.status(500).send("Error fetching doodles.");
+    console.error("Error fetching doodles:", err);
+    res.status(500).send("Error loading gallery.");
   }
 });
 
-// Test route
 app.get("/test", (req, res) => {
   res.send("Server is alive!");
 });
 
-// Start server
 app.listen(PORT, () => {
-  console.log(`🚀 Server is running on port ${PORT}`);
+  console.log(`🚀 Server running on port ${PORT}`);
 });
