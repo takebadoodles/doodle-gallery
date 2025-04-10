@@ -3,6 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const cors = require("cors");
 const { google } = require("googleapis");
+const stream = require("stream");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -11,8 +12,8 @@ const PORT = process.env.PORT || 3000;
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI;
-let GOOGLE_ACCESS_TOKEN = process.env.GOOGLE_ACCESS_TOKEN;
-let GOOGLE_REFRESH_TOKEN = process.env.GOOGLE_REFRESH_TOKEN;
+const GOOGLE_ACCESS_TOKEN = process.env.GOOGLE_ACCESS_TOKEN;
+const GOOGLE_REFRESH_TOKEN = process.env.GOOGLE_REFRESH_TOKEN;
 
 const oauth2Client = new google.auth.OAuth2(
   GOOGLE_CLIENT_ID,
@@ -27,7 +28,7 @@ oauth2Client.setCredentials({
 });
 
 // Automatically refresh the access token when it expires
-oauth2Client.on("tokens", (tokens) => {
+oauth2Client.on('tokens', (tokens) => {
   if (tokens.refresh_token) {
     GOOGLE_REFRESH_TOKEN = tokens.refresh_token; // Save the new refresh token
   }
@@ -54,19 +55,21 @@ app.post("/submit", async (req, res) => {
   const base64Data = imageData.replace(/^data:image\/png;base64,/, "");
   const filename = `doodle-${Date.now()}.png`;
 
-  // Create a readable stream from the base64 image data
-  const bufferStream = new require("stream").PassThrough();
-  bufferStream.end(Buffer.from(base64Data, "base64"));
-
   // Upload doodle to Google Drive
   try {
     const fileMetadata = {
       name: filename,
       parents: [DRIVE_FOLDER_ID], // Google Drive folder ID
     };
+
+    // Convert base64 to a readable stream
+    const buffer = Buffer.from(base64Data, "base64");
+    const bufferStream = new stream.PassThrough();
+    bufferStream.end(buffer);
+
     const media = {
       mimeType: "image/png",
-      body: bufferStream, // Use bufferStream as the body
+      body: bufferStream,  // Use the stream here
     };
 
     const driveResponse = await drive.files.create({
@@ -75,7 +78,18 @@ app.post("/submit", async (req, res) => {
       fields: "id",
     });
 
-    console.log("✅ Doodle uploaded to Google Drive:", driveResponse.data.id);
+    const fileId = driveResponse.data.id;
+
+    // Now make the file publicly viewable
+    await drive.permissions.create({
+      fileId: fileId,
+      requestBody: {
+        role: 'reader',  // Give read access
+        type: 'anyone',  // Make it public
+      },
+    });
+
+    console.log("✅ Doodle uploaded to Google Drive:", fileId);
     res.status(200).send("Saved and uploaded successfully!");
   } catch (err) {
     console.error("Error uploading doodle to Google Drive:", err);
