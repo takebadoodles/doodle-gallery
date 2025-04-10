@@ -20,7 +20,7 @@ const oauth2Client = new google.auth.OAuth2(
   GOOGLE_REDIRECT_URI
 );
 
-// Set the credentials for Google Drive API
+// Set the credentials for Google Drive API using the tokens
 oauth2Client.setCredentials({
   access_token: GOOGLE_ACCESS_TOKEN,
   refresh_token: GOOGLE_REFRESH_TOKEN,
@@ -28,12 +28,23 @@ oauth2Client.setCredentials({
 
 const drive = google.drive({ version: "v3", auth: oauth2Client });
 
-// Folder ID in Google Drive
-const folderId = "13lFFV-q1Cse2xSWogmWr6VTLeaVd54V2"; // Update with your actual folder ID
+// Base directory and doodle storage path
+const baseDir = process.cwd();
+const doodleFolder = path.join(baseDir, "data", "doodles");
 
 // Middleware setup
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
+app.use("/data", express.static(path.join(baseDir, "data")));
+
+// Ensure doodle folder exists
+fs.mkdirSync(doodleFolder, { recursive: true }, (err) => {
+  if (err) {
+    console.error("Error creating doodle folder:", err);
+  } else {
+    console.log("✅ Doodle folder is ready.");
+  }
+});
 
 // POST: Submit new doodle
 app.post("/submit", async (req, res) => {
@@ -45,90 +56,78 @@ app.post("/submit", async (req, res) => {
 
   const base64Data = imageData.replace(/^data:image\/png;base64,/, "");
   const filename = `doodle-${Date.now()}.png`;
+  const filePath = path.join(doodleFolder, filename);
 
-  // Upload doodle to Google Drive
-  try {
-    const fileMetadata = {
-      name: filename,
-      parents: [folderId], // Upload to the specified Google Drive folder
-    };
-    const media = {
-      mimeType: "image/png",
-      body: Buffer.from(base64Data, "base64"), // Upload image data directly from base64
-    };
+  fs.writeFile(filePath, base64Data, "base64", async (err) => {
+    if (err) {
+      console.error("Error saving doodle:", err);
+      return res.status(500).send("Failed to save doodle");
+    }
+    console.log(`✅ Doodle saved at ${filePath}`);
 
-    const driveResponse = await drive.files.create({
-      resource: fileMetadata,
-      media: media,
-      fields: "id,webViewLink",
-    });
+    // Upload doodle to Google Drive
+    try {
+      const fileMetadata = {
+        name: filename,
+        parents: ["13lFFV-q1Cse2xSWogmWr6VTLeaVd54V2"], // Folder ID
+      };
+      const media = {
+        mimeType: "image/png",
+        body: fs.createReadStream(filePath),
+      };
 
-    console.log("✅ Doodle uploaded to Google Drive:", driveResponse.data.id);
+      const driveResponse = await drive.files.create({
+        resource: fileMetadata,
+        media: media,
+        fields: "id",
+      });
 
-    res.status(200).send({
-      message: "Saved and uploaded successfully!",
-      driveLink: driveResponse.data.webViewLink, // Provide the direct link to the uploaded image
-    });
-  } catch (err) {
-    console.error("Error uploading doodle to Google Drive:", err);
-    res.status(500).send("Failed to upload doodle to Google Drive");
-  }
+      console.log("✅ Doodle uploaded to Google Drive:", driveResponse.data.id);
+      res.status(200).send("Saved and uploaded successfully!");
+    } catch (err) {
+      console.error("Error uploading doodle to Google Drive:", err);
+      res.status(500).send("Failed to upload doodle to Google Drive");
+    }
+  });
 });
 
-// DELETE: Remove a specific doodle from Google Drive and local folder (if applicable)
-app.delete("/delete/:filename", async (req, res) => {
+// DELETE: Remove a specific doodle
+app.delete("/delete/:filename", (req, res) => {
   const { filename } = req.params;
+  const filePath = path.join(doodleFolder, filename);
 
   // Prevent path traversal attacks
   if (!filename.endsWith(".png") || filename.includes("..")) {
     return res.status(400).send("Invalid filename");
   }
 
-  try {
-    // Search for the file on Google Drive by name
-    const driveFiles = await drive.files.list({
-      q: `name = '${filename}' and '${folderId}' in parents`,
-      fields: "files(id)",
-    });
-
-    if (driveFiles.data.files.length === 0) {
-      return res.status(404).send("File not found on Google Drive");
+  fs.unlink(filePath, (err) => {
+    if (err) {
+      console.error("Error deleting doodle:", err);
+      return res.status(500).send("Failed to delete doodle");
     }
-
-    // Get the file ID
-    const fileId = driveFiles.data.files[0].id;
-
-    // Delete the file from Google Drive
-    await drive.files.delete({
-      fileId: fileId,
-    });
-
-    console.log(`🗑️ Deleted doodle from Google Drive: ${filename}`);
-    res.status(200).send("Deleted successfully from Google Drive!");
-  } catch (err) {
-    console.error("Error deleting doodle from Google Drive:", err);
-    res.status(500).send("Failed to delete doodle from Google Drive");
-  }
+    console.log(`🗑️ Deleted doodle: ${filename}`);
+    res.status(200).send("Deleted successfully!");
+  });
 });
 
-// GET: Serve doodle gallery page (from Google Drive)
-app.get("/", async (req, res) => {
+// GET: Serve doodle gallery page
+app.get("/", (req, res) => {
   console.log("Handling gallery request...");
+  fs.readdir(doodleFolder, (err, files) => {
+    if (err) {
+      console.error("Error reading doodles:", err);
+      return res.status(500).send("Error reading doodles.");
+    }
 
-  try {
-    // List all files in the specified Google Drive folder
-    const driveFiles = await drive.files.list({
-      q: `'${folderId}' in parents`,
-      fields: "files(id, name, webViewLink)",
-    });
-
-    const imageCards = driveFiles.data.files
-      .filter(file => file.name.endsWith(".png"))
-      .map(file => `
+    const imageCards = files
+      .filter(file => file.endsWith(".png"))
+      .sort((a, b) => b.localeCompare(a))
+      .map(file => ` 
         <div style="margin: 20px; display: inline-block;">
-          <img src="${file.webViewLink}" alt="${file.name}" style="max-width:300px;margin:10px;border:2px solid #ccc;border-radius:8px;">
+          <img src="/data/doodles/${file}" alt="${file}" style="max-width:300px;margin:10px;border:2px solid #ccc;border-radius:8px;">
           <br>
-          <button onclick="deleteImage('${file.name}')">🗑️ Delete</button>
+          <button onclick="deleteImage('${file}')">🗑️ Delete</button>
         </div>
       `)
       .join("");
@@ -183,10 +182,7 @@ app.get("/", async (req, res) => {
       </html>
     `;
     res.send(html);
-  } catch (err) {
-    console.error("Error fetching doodles from Google Drive:", err);
-    res.status(500).send("Failed to fetch doodles from Google Drive");
-  }
+  });
 });
 
 // Optional test route

@@ -1,0 +1,17 @@
+# Ignore .env file (environment variables)
+.env
+
+# Node.js dependencies
+node_modules/
+
+# Logs
+npm-debug.log
+yarn-error.log
+
+# OS-specific files (optional)
+.DS_Store    # macOS
+Thumbs.db    # Windows
+
+# Build artifacts (optional)
+dist/
+build/
