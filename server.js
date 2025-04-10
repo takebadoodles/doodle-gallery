@@ -11,7 +11,6 @@ const PORT = process.env.PORT || 3000;
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI;
-const GOOGLE_ACCESS_TOKEN = process.env.GOOGLE_ACCESS_TOKEN;
 const GOOGLE_REFRESH_TOKEN = process.env.GOOGLE_REFRESH_TOKEN;
 
 const oauth2Client = new google.auth.OAuth2(
@@ -20,10 +19,26 @@ const oauth2Client = new google.auth.OAuth2(
   GOOGLE_REDIRECT_URI
 );
 
+// Set the initial credentials with only the refresh token
 oauth2Client.setCredentials({
-  access_token: GOOGLE_ACCESS_TOKEN,
   refresh_token: GOOGLE_REFRESH_TOKEN,
 });
+
+// Ensure the access token is valid and refresh it if needed
+const refreshAccessTokenIfNeeded = async () => {
+  try {
+    // Get a new access token if the old one is expired
+    const tokenInfo = await oauth2Client.getAccessToken();
+    if (!tokenInfo.token) {
+      console.error("Error: No access token found, refresh token is required.");
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.error("Error refreshing access token:", err);
+    return false;
+  }
+};
 
 const drive = google.drive({ version: "v3", auth: oauth2Client });
 
@@ -36,6 +51,10 @@ app.use(express.json({ limit: "10mb" }));
 app.post("/submit", async (req, res) => {
   const { imageData } = req.body;
   if (!imageData) return res.status(400).send("Missing imageData");
+
+  // Refresh the access token if needed
+  const tokenRefreshed = await refreshAccessTokenIfNeeded();
+  if (!tokenRefreshed) return res.status(500).send("Access token refresh failed");
 
   const base64Data = imageData.replace(/^data:image\/png;base64,/, "");
   const filename = `doodle-${Date.now()}.png`;
@@ -79,6 +98,10 @@ app.post("/submit", async (req, res) => {
 app.delete("/delete/:fileId", async (req, res) => {
   const { fileId } = req.params;
 
+  // Refresh the access token if needed
+  const tokenRefreshed = await refreshAccessTokenIfNeeded();
+  if (!tokenRefreshed) return res.status(500).send("Access token refresh failed");
+
   try {
     await drive.files.delete({ fileId });
     console.log(`🗑️ Deleted doodle: ${fileId}`);
@@ -91,6 +114,10 @@ app.delete("/delete/:fileId", async (req, res) => {
 
 // GET: Render the doodle gallery
 app.get("/", async (req, res) => {
+  // Refresh the access token if needed
+  const tokenRefreshed = await refreshAccessTokenIfNeeded();
+  if (!tokenRefreshed) return res.status(500).send("Access token refresh failed");
+
   try {
     const listResponse = await drive.files.list({
       q: `'${DRIVE_FOLDER_ID}' in parents and mimeType = 'image/png'`,
@@ -110,6 +137,7 @@ app.get("/", async (req, res) => {
         `;
       })
       .join("");
+
 
     const html = `
       <!DOCTYPE html>
