@@ -54,7 +54,7 @@ app.post("/submit", async (req, res) => {
         mimeType: "image/png",
         body: bufferStream,
       },
-      fields: "id, webContentLink",
+      fields: "id",
     });
 
     const fileId = response.data.id;
@@ -67,7 +67,7 @@ app.post("/submit", async (req, res) => {
       },
     });
 
-    console.log("✅ Uploaded doodle:", response.data.webContentLink);
+    console.log("✅ Uploaded doodle:", `https://drive.google.com/uc?id=${fileId}`);
     res.status(200).send("Saved and uploaded successfully!");
   } catch (err) {
     console.error("Error uploading doodle to Google Drive:", err);
@@ -94,13 +94,13 @@ app.get("/", async (req, res) => {
   try {
     const listResponse = await drive.files.list({
       q: `'${DRIVE_FOLDER_ID}' in parents and mimeType = 'image/png'`,
-      fields: "files(id, name, webContentLink)",
+      fields: "files(id, name)",
     });
 
     const imageCards = listResponse.data.files
       .sort((a, b) => b.name.localeCompare(a.name))
       .map((file) => {
-        const embedUrl = file.webContentLink?.replace("&export=download", "") || "";
+        const embedUrl = `https://drive.google.com/uc?id=${file.id}`;
         return `
           <div style="margin: 20px; display: inline-block;">
             <img src="${embedUrl}" alt="${file.name}" style="max-width:300px;margin:10px;border:2px solid #ccc;border-radius:8px;">
