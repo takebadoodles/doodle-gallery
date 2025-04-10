@@ -54,9 +54,8 @@ app.post("/submit", async (req, res) => {
   const base64Data = imageData.replace(/^data:image\/png;base64,/, "");
   const filename = `doodle-${Date.now()}.png`;
 
-  // Create a readable stream from the base64 data
+  // Create a buffer from base64 data
   const buffer = Buffer.from(base64Data, 'base64');
-  const mediaStream = fs.createReadStream(buffer); // Create a readable stream
 
   // Upload doodle to Google Drive
   try {
@@ -64,9 +63,10 @@ app.post("/submit", async (req, res) => {
       name: filename,
       parents: [DRIVE_FOLDER_ID], // Google Drive folder ID
     };
+
     const media = {
       mimeType: "image/png",
-      body: mediaStream, // Use the readable stream here
+      body: buffer, // Pass the buffer directly here
     };
 
     const driveResponse = await drive.files.create({
