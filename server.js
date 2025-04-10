@@ -71,6 +71,15 @@ app.post("/submit", async (req, res) => {
       fields: "id",
     });
 
+    // Make the uploaded file public (readable by anyone with the link)
+    await drive.permissions.create({
+      fileId: driveResponse.data.id,
+      resource: {
+        role: "reader",
+        type: "anyone",
+      },
+    });
+
     console.log("✅ Doodle uploaded to Google Drive:", driveResponse.data.id);
     res.status(200).send("Saved and uploaded successfully!");
   } catch (err) {
